@@ -1,0 +1,12 @@
+name: YinBindings
+description: Bindings for Yin pitch detection library.
+output: 'lib/yin_bindings.dart'
+headers:
+  entry-points:
+    - 'yin/yin.h'
+  include-directives:
+    - 'yin/yin.h'
+preamble: |
+  // ignore_for_file: always_specify_types
+  // ignore_for_file: camel_case_types
+  // ignore_for_file: non_constant_identifier_names
