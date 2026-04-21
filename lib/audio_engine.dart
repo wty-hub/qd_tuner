@@ -4,34 +4,61 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
-import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 
 import 'yin_bindings.dart';
 
+/// 输入场景：手机麦克风（木吉他等）与电琴/夹子拾音等线路信号特性不同，门限分开调。
+enum TunerInputMode {
+  /// 环境/琴箱声，略偏抗环境噪声
+  microphone,
+
+  /// 电吉他、压电夹子等：波形更尖、底噪相对小，可略放宽检出
+  pickup,
+}
+
 class AudioEngine {
   final AudioRecorder _audioRecorder = AudioRecorder();
   final YinBindings _yinBindings = YinBindings();
 
-  // FFI Pointers
+  // FFI 指针
   Pointer<Yin>? _yinPointer;
   Pointer<Float>? _inputBuffer;
 
   StreamSubscription<Uint8List>? _audioStreamSubscription;
-  final StreamController<double> _pitchController = StreamController<double>.broadcast();
+  final StreamController<double> _pitchController =
+      StreamController<double>.broadcast();
 
-  // Buffer handling
+  // 缓冲：PCM 16 位每采样 2 字节；2048 采样 = 4096 字节
   final List<int> _audioBuffer = [];
-  // Since we use PCM 16bit, 2 bytes = 1 sample
-  // We need 2048 samples = 4096 bytes
   static const int _requiredSamples = 2048;
-  static const int _bytesPerSample = 2; // 16-bit
+  static const int _bytesPerSample = 2; // 16 位
   static const int _requiredBytes = _requiredSamples * _bytesPerSample;
 
-  // Smoothing
+  // 音高结果平滑
   final List<double> _pitchHistory = [];
-  static const int _medianWindowSize = 7;
+  static const int _medianWindowSize = 5;
+
+  /// 至少累计这么多帧有效音高就开始输出（略小于窗口，小声时更快有读数）
+  static const int _minHistoryForOutput = 3;
+
+  /// 连续多少个「门关闭」的处理窗之后才视为静音
+  /// （44100 Hz、每块 2048 采样时约 93 ms）。
+  static const int _quietChunksForSilence = 2;
+
+  TunerInputMode _inputMode = TunerInputMode.microphone;
+  double _rmsSmooth = 0.72;
+  double _rmsOpen = 0.014;
+  double _rmsClose = 0.009;
+  double _peakGateWeight = 0.42;
+  double _yinThreshold = 0.14;
+
+  TunerInputMode get inputMode => _inputMode;
+
+  double _rmsEnvelope = 0.0;
+  bool _voiceGateOpen = false;
+  int _quietChunkCount = 0;
 
   Stream<double> get pitchStream => _pitchController.stream;
 
@@ -39,14 +66,41 @@ class AudioEngine {
   bool get isRecording => _isRecording;
 
   Future<void> init() async {
-    // Initialize FFI memory
+    // 分配 FFI 内存
     _yinPointer = calloc<Yin>();
     _inputBuffer = calloc<Float>(_requiredSamples);
 
-    // Initialize YIN algorithm
-    // Increase threshold to 0.20 to prevent lower octave errors on D string
-    // A higher threshold makes it easier to lock onto the fundamental frequency
-    _yinBindings.init(_yinPointer!, 0.20); 
+    _applyInputModePresets();
+    _yinBindings.init(_yinPointer!, _yinThreshold);
+  }
+
+  /// 切换麦克风 / 拾音器预设（可随时调用，会重置 YIN 内部阈值状态）
+  void setInputMode(TunerInputMode mode) {
+    if (mode == _inputMode) return;
+    _inputMode = mode;
+    _applyInputModePresets();
+    if (_yinPointer != null) {
+      _yinBindings.init(_yinPointer!, _yinThreshold);
+    }
+  }
+
+  void _applyInputModePresets() {
+    switch (_inputMode) {
+      case TunerInputMode.microphone:
+        _rmsSmooth = 0.72;
+        _rmsOpen = 0.014;
+        _rmsClose = 0.009;
+        _peakGateWeight = 0.42;
+        _yinThreshold = 0.14;
+        break;
+      case TunerInputMode.pickup:
+        _rmsSmooth = 0.68;
+        _rmsOpen = 0.010;
+        _rmsClose = 0.006;
+        _peakGateWeight = 0.50;
+        _yinThreshold = 0.12;
+        break;
+    }
   }
 
   Future<void> start() async {
@@ -68,6 +122,9 @@ class AudioEngine {
     _isRecording = true;
     _audioBuffer.clear();
     _pitchHistory.clear();
+    _rmsEnvelope = 0.0;
+    _voiceGateOpen = false;
+    _quietChunkCount = 0;
 
     _audioStreamSubscription = stream.listen((data) {
       _processAudioData(data);
@@ -77,51 +134,58 @@ class AudioEngine {
   void _processAudioData(Uint8List data) {
     _audioBuffer.addAll(data);
 
-    // If we have enough bytes for processing
     while (_audioBuffer.length >= _requiredBytes) {
-      // Extract the chunk
       final chunkBytes = _audioBuffer.sublist(0, _requiredBytes);
       _audioBuffer.removeRange(0, _requiredBytes);
 
-      // Convert Bytes (Int16) to Float [-1.0, 1.0]
+      // Int16 小端 PCM → 浮点 [-1.0, 1.0]
       final byteData = ByteData.sublistView(Uint8List.fromList(chunkBytes));
-      
+
       double sumSquare = 0.0;
+      double peak = 0.0;
       for (int i = 0; i < _requiredSamples; i++) {
-        // Little Endian is standard for PCM usually
+        // PCM 通常为小端序
         final int16Sample = byteData.getInt16(i * 2, Endian.little);
         final double floatSample = int16Sample / 32768.0;
         _inputBuffer![i] = floatSample;
         sumSquare += floatSample * floatSample;
+        final a = floatSample.abs();
+        if (a > peak) peak = a;
       }
 
       double rms = math.sqrt(sumSquare / _requiredSamples);
+      final level = math.max(rms, peak * _peakGateWeight);
 
-      if (rms > 0.05) {
-        // Call YIN
+      _rmsEnvelope = _rmsSmooth * _rmsEnvelope + (1.0 - _rmsSmooth) * level;
+      if (_voiceGateOpen) {
+        if (_rmsEnvelope < _rmsClose) _voiceGateOpen = false;
+      } else {
+        if (_rmsEnvelope > _rmsOpen) _voiceGateOpen = true;
+      }
+
+      if (_voiceGateOpen) {
+        _quietChunkCount = 0;
         if (_yinPointer != null && _inputBuffer != null) {
           var pitch = _yinBindings.getPitch(_yinPointer!, _inputBuffer!);
 
-          // Filter invalid results if necessary (e.g., -1 usually means no pitch found)
+          // 无效结果（如未检出音高）已在外层用 pitch > 0 过滤
           if (pitch > 0) {
-            // Anti-doubling: check against current history median
+            // 结合历史中位数抑制倍频/半频跳变
             if (_pitchHistory.isNotEmpty) {
               final sortedHistory = List<double>.from(_pitchHistory)..sort();
               final currentMedian = sortedHistory[sortedHistory.length ~/ 2];
-              
+
               if (currentMedian > 0) {
                 double adjustedPitch = pitch;
                 final ratio = pitch / currentMedian;
-                
-                // Fix octave errors (doubling/halving)
+
+                // 八度修正：约 2 倍 → 折半；约 0.5 倍 → 加倍
                 if (ratio > 1.9 && ratio < 2.1) {
-                  // Detected an octave jump (approx 2x) -> correct to fundamental
                   adjustedPitch /= 2;
                 } else if (ratio > 0.45 && ratio < 0.55) {
-                  // Detected a drop to lower octave (approx 0.5x) -> correct to fundamental
                   adjustedPitch *= 2;
                 }
-                
+
                 pitch = adjustedPitch;
               }
             }
@@ -131,9 +195,7 @@ class AudioEngine {
               _pitchHistory.removeAt(0);
             }
 
-            // Wait for history to fill up for stability
-            if (_pitchHistory.length == _medianWindowSize) {
-              // Median filter
+            if (_pitchHistory.length >= _minHistoryForOutput) {
               final sorted = List<double>.from(_pitchHistory)..sort();
               final median = sorted[sorted.length ~/ 2];
               _pitchController.add(median);
@@ -141,20 +203,26 @@ class AudioEngine {
           }
         }
       } else {
-        _pitchHistory.clear();
-        _pitchController.add(-1.0);
+        _quietChunkCount++;
+        if (_quietChunkCount >= _quietChunksForSilence) {
+          _pitchHistory.clear();
+          _pitchController.add(-1.0);
+        }
       }
     }
   }
 
   Future<void> stop() async {
     if (!_isRecording) return;
-    
+
     await _audioRecorder.stop();
     await _audioStreamSubscription?.cancel();
     _isRecording = false;
     _audioBuffer.clear();
     _pitchHistory.clear();
+    _rmsEnvelope = 0.0;
+    _voiceGateOpen = false;
+    _quietChunkCount = 0;
   }
 
   void dispose() {

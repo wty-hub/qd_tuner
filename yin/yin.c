@@ -177,8 +177,8 @@ float Yin_get_pitch(Yin* yin, float* input_buffer) {
   // 2. 找粗略延迟
   int tau = Yin_absolute_threshold(yin);
 
-  // 如果信号太差 (概率太低)，返回 -1
-  if (yin->probability < 0.15f) {
+  // 弱音时 probability 往往偏低；阈值过高会导致小声完全无读数（由上层 RMS/峰值门控挡噪声）
+  if (yin->probability < 0.085f) {
     return -1.0f;
   }
 

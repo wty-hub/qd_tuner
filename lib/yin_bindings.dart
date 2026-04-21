@@ -1,4 +1,4 @@
-// lib/yin_bindings.dart
+// YIN 原生库 FFI 绑定
 import 'dart:ffi';
 import 'dart:io';
 
@@ -33,15 +33,14 @@ class YinBindings {
     if (Platform.isAndroid) {
       _dylib = DynamicLibrary.open('libyin_library.so');
     } else if (Platform.isWindows) {
-      // On Windows, since we added sources to the runner, symbols are in the executable globally
-      // or we can try opening `runner.exe` or `DynamicLibrary.executable()`.
+      // Windows：源码链进 runner 后符号在可执行体内，可用 DynamicLibrary.executable()
       _dylib = DynamicLibrary.executable();
     } else if (Platform.isIOS || Platform.isMacOS) {
-      // On iOS/macOS, symbols are usually linked into the main executable or process
+      // iOS/macOS：符号一般在主可执行文件 / 当前进程内
       _dylib = DynamicLibrary.process();
     } else {
-      // For now fallback to process
-       _dylib = DynamicLibrary.process();
+      // 其他平台：退回 process()
+      _dylib = DynamicLibrary.process();
     }
 
     _yinInit = _dylib
