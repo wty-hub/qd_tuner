@@ -4,6 +4,13 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/* Dart FFI on Windows uses GetProcAddress on the main module; symbols must be exported. */
+#if defined(_WIN32) || defined(__CYGWIN__)
+#  define YIN_API __declspec(dllexport)
+#else
+#  define YIN_API
+#endif
+
 /* ----- 常数设定，这些被实践验证了，不必更改 ----- */
 // 采样频率，44100 Hz
 #define YIN_SAMPLING_RATE 44100
@@ -25,6 +32,6 @@ typedef struct Yin {
 
 // 函数声明
 // 初始化数据结构，设定阈值
-void Yin_init(Yin* yin, float threshold);
+YIN_API void Yin_init(Yin* yin, float threshold);
 // 根据采样的信号，获取当前基频
-float Yin_get_pitch(Yin* yin, float* input_buffer);
+YIN_API float Yin_get_pitch(Yin* yin, float* input_buffer);

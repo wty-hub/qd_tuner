@@ -6,7 +6,7 @@
 #include "fft.h"
 
 // 初始化
-void Yin_init(Yin* yin, float threshold) {
+YIN_API void Yin_init(Yin* yin, float threshold) {
   yin->threshold = threshold;
   yin->probability = 0.0f;
 }
@@ -170,7 +170,7 @@ static float Yin_parabolic_interpolation(Yin* yin, int tau_idx) {
   return (float)tau_idx + adjustment;
 }
 
-float Yin_get_pitch(Yin* yin, float* input_buffer) {
+YIN_API float Yin_get_pitch(Yin* yin, float* input_buffer) {
   // 1. 计算差分
   Yin_difference_fft(yin, input_buffer);
 
