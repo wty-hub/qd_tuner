@@ -54,7 +54,7 @@ static void Yin_difference_fft(Yin* yin, const float* input_buffer) {
   int half_size = YIN_BUFFER_SIZE / 2;
 
   // A. 预计算能量项 (前缀和)
-  float* S = malloc((YIN_BUFFER_SIZE + 1) * sizeof(float));
+  float* S = (float*)malloc((YIN_BUFFER_SIZE + 1) * sizeof(float));
   S[0] = 0.0f;
   for (int i = 0; i < YIN_BUFFER_SIZE; i++) {
     S[i + 1] = S[i] + (input_buffer[i] * input_buffer[i]);
@@ -63,23 +63,23 @@ static void Yin_difference_fft(Yin* yin, const float* input_buffer) {
   // 计算互相关项 (FFT)
   int fft_size = next_pow2(YIN_BUFFER_SIZE);
   // 窗口内的信号
-  yin_complex* corr = malloc(fft_size * sizeof(yin_complex));
+  yin_complex* corr = (yin_complex*)malloc(fft_size * sizeof(yin_complex));
   // 延迟对比的信号
-  yin_complex* corr_lag = malloc(fft_size * sizeof(yin_complex));
+  yin_complex* corr_lag = (yin_complex*)malloc(fft_size * sizeof(yin_complex));
 
   for (int i = 0; i < fft_size; i++) {
     if (i < half_size) {
-      corr[i] = input_buffer[i] + 0.0 * I;
+      corr[i] = yin_make_complex(input_buffer[i], 0.0f);
     } else {
       // 窗口之外的需要补 0
-      corr[i] = 0.0 + 0.0 * I;
+      corr[i] = yin_make_complex(0.0f, 0.0f);
     }
 
     if (i < YIN_BUFFER_SIZE) {
-      corr_lag[i] = input_buffer[i] + 0.0 * I;
+      corr_lag[i] = yin_make_complex(input_buffer[i], 0.0f);
     } else {
       // 有效数据之外的需要补 0
-      corr_lag[i] = 0.0 + 0.0 * I;
+      corr_lag[i] = yin_make_complex(0.0f, 0.0f);
     }
   }
   fft(corr, fft_size);
@@ -87,7 +87,7 @@ static void Yin_difference_fft(Yin* yin, const float* input_buffer) {
 
   // 频域互相关: Conj(A) * B
   for (int i = 0; i < fft_size; i++) {
-    corr[i] = conjf(corr[i]) * corr_lag[i];
+    corr[i] = yin_conj(corr[i]) * corr_lag[i];
   }
 
   ifft(corr, fft_size);
@@ -98,7 +98,7 @@ static void Yin_difference_fft(Yin* yin, const float* input_buffer) {
   float running_sum = 0.0f;
 
   for (int tau = 1; tau < half_size; tau++) {
-    float term2 = creal(corr[tau]);             // 第二项：互相关项
+    float term2 = yin_real(corr[tau]);             // 第二项：互相关项
     float term3 = S[tau + half_size] - S[tau];  // 第三项：移动能量项
     float sum = term1 - 2.0f * term2 + term3;
     if (sum < 0.0f) {
@@ -152,7 +152,6 @@ static int Yin_absolute_threshold(Yin* yin) {
 }
 
 static float Yin_parabolic_interpolation(Yin* yin, int tau_idx) {
-  float x0, x2;
   int half_size = YIN_BUFFER_SIZE / 2;
 
   // 边界检查

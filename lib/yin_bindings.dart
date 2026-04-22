@@ -33,8 +33,7 @@ class YinBindings {
     if (Platform.isAndroid) {
       _dylib = DynamicLibrary.open('libyin_library.so');
     } else if (Platform.isWindows) {
-      // Windows：源码链进 runner 后符号在可执行体内，可用 DynamicLibrary.executable()
-      _dylib = DynamicLibrary.executable();
+      _dylib = DynamicLibrary.open('yin_library.dll');
     } else if (Platform.isIOS || Platform.isMacOS) {
       // iOS/macOS：符号一般在主可执行文件 / 当前进程内
       _dylib = DynamicLibrary.process();

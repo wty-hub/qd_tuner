@@ -37,12 +37,13 @@ void fft(yin_complex x[], int n) {
   // 问题规模 size 从 2 开始，因为 1 就是终点情况
   for (int size = 2; size <= n; size *= 2) {
     // 计算当前规模的单位旋转因子（就是当前单位圆上的旋转角度）
-    yin_complex w_unit = cexp(-I * 2.0 * PI / size);
+    const float theta = (float)(-2.0 * PI / size);
+    yin_complex w_unit = yin_cexp_imag(theta);
     // 当前规模下每个问题的起点
     for (int i = 0; i < n; i += size) {
       // 当前旋转因子
       // 同样是合并的过程
-      yin_complex w = 1.0;
+      yin_complex w = yin_make_complex(1.0f, 0.0f);
       for (int j = 0; j < size / 2; j++) {
         yin_complex u = x[i + j];
         // 计算之前，前半段都是偶序列的，后半段都是奇序列的
@@ -61,10 +62,10 @@ void fft(yin_complex x[], int n) {
 /* 反向 fft 迭代版 */
 void ifft(yin_complex x[], int n) {
   for (int i = 0; i < n; i++) {
-    x[i] = conj(x[i]);
+    x[i] = yin_conj(x[i]);
   }
   fft(x, n);
   for (int i = 0; i < n; i++) {
-    x[i] = conj(x[i]) / n;
+    x[i] = yin_conj(x[i]) / (float)n;
   }
 }

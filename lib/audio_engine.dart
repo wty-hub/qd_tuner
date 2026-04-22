@@ -132,21 +132,27 @@ class AudioEngine {
   }
 
   void _processAudioData(Uint8List data) {
+    // data 是一个 PCM（Pulse Code Modulation，脉冲编码调制）流
     _audioBuffer.addAll(data);
 
     while (_audioBuffer.length >= _requiredBytes) {
+      // 流式读取 2048 个点（4096字节）
       final chunkBytes = _audioBuffer.sublist(0, _requiredBytes);
       _audioBuffer.removeRange(0, _requiredBytes);
 
-      // Int16 小端 PCM → 浮点 [-1.0, 1.0]
+      // 将裸字节转化为可以按16位整数方式读的视图
+      // Int16 小端 PCM
       final byteData = ByteData.sublistView(Uint8List.fromList(chunkBytes));
 
+      // 计算平方和与峰值
       double sumSquare = 0.0;
       double peak = 0.0;
       for (int i = 0; i < _requiredSamples; i++) {
         // PCM 通常为小端序
         final int16Sample = byteData.getInt16(i * 2, Endian.little);
+        // 将原始的 int16 信号 转换到 [-1, 1] 的 浮点数
         final double floatSample = int16Sample / 32768.0;
+        // 将浮点数存入 buffer
         _inputBuffer![i] = floatSample;
         sumSquare += floatSample * floatSample;
         final a = floatSample.abs();
@@ -154,8 +160,12 @@ class AudioEngine {
       }
 
       double rms = math.sqrt(sumSquare / _requiredSamples);
+      // 当前的“声音指标”
+      // 取 平均能量 (rms) 与 峰值乘以一个权重 的最大值，
+      // 平衡 短促拨弦 和 持续弱音
       final level = math.max(rms, peak * _peakGateWeight);
 
+      // 包络平滑：上一时刻与这一时刻音量的滑动平均数
       _rmsEnvelope = _rmsSmooth * _rmsEnvelope + (1.0 - _rmsSmooth) * level;
       if (_voiceGateOpen) {
         if (_rmsEnvelope < _rmsClose) _voiceGateOpen = false;

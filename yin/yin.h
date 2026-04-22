@@ -11,6 +11,10 @@
 #  define YIN_API
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* ----- 常数设定，这些被实践验证了，不必更改 ----- */
 // 采样频率，44100 Hz
 #define YIN_SAMPLING_RATE 44100
@@ -35,3 +39,7 @@ typedef struct Yin {
 YIN_API void Yin_init(Yin* yin, float threshold);
 // 根据采样的信号，获取当前基频
 YIN_API float Yin_get_pitch(Yin* yin, float* input_buffer);
+
+#ifdef __cplusplus
+}
+#endif

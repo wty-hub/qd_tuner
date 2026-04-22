@@ -14,9 +14,18 @@ add_executable(${BINARY_NAME} WIN32
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
   "Runner.rc"
   "runner.exe.manifest"
+)
+
+add_library(yin_library SHARED
   "../../yin/yin.c"
   "../../yin/fft.c"
 )
+set_source_files_properties(
+  "../../yin/yin.c"
+  "../../yin/fft.c"
+  PROPERTIES LANGUAGE CXX
+)
+target_include_directories(yin_library PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../yin")
 
 # Apply the standard set of build settings. This can be removed for applications
 # that need different build settings.
@@ -34,7 +43,7 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 
 # Add dependency libraries and include directories. Add any application-specific
 # dependencies here.
-target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
+target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app yin_library)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
