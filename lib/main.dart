@@ -32,7 +32,7 @@ class QdTunerApp extends StatelessWidget {
   }
 }
 
-/// 底部导航：调音 / 拾音器输入预设
+/// 主界面：调音
 class MainShell extends StatefulWidget {
   const MainShell({super.key});
 
@@ -43,8 +43,6 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   final AudioEngine _audioEngine = AudioEngine();
   bool? _hasPermission;
-  int _navIndex = 0;
-  TunerInputMode _inputMode = TunerInputMode.microphone;
 
   @override
   void initState() {
@@ -111,39 +109,7 @@ class _MainShellState extends State<MainShell> {
       );
     }
 
-    return Scaffold(
-      body: IndexedStack(
-        index: _navIndex,
-        children: [
-          TunerTab(audioEngine: _audioEngine),
-          PickupTab(
-            mode: _inputMode,
-            onModeChanged: (mode) {
-              setState(() {
-                _inputMode = mode;
-                _audioEngine.setInputMode(mode);
-              });
-            },
-          ),
-        ],
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _navIndex,
-        onDestinationSelected: (i) => setState(() => _navIndex = i),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.tune_outlined),
-            selectedIcon: Icon(Icons.tune),
-            label: '调音',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.settings_input_component_outlined),
-            selectedIcon: Icon(Icons.settings_input_component),
-            label: '拾音器',
-          ),
-        ],
-      ),
-    );
+    return Scaffold(body: TunerTab(audioEngine: _audioEngine));
   }
 }
 
@@ -156,24 +122,55 @@ class TunerTab extends StatefulWidget {
   State<TunerTab> createState() => _TunerTabState();
 }
 
+enum TunerInstrument { guitar }
+
+enum TuningMode { targetString, freeListening }
+
+class _NearestNote {
+  const _NearestNote({required this.label, required this.frequency});
+
+  final String label;
+  final double frequency;
+}
+
 class _TunerTabState extends State<TunerTab>
     with SingleTickerProviderStateMixin {
+  TunerInstrument _instrument = TunerInstrument.guitar;
+  TuningMode _tuningMode = TuningMode.targetString;
   String _targetNote = 'E';
+  String _nearestNoteLabel = '--';
+  double _nearestNoteFrequency = 0.0;
   double _currentDiff = 0.0; // -1.0～1.0，负为偏低、正为偏高
   double _currentPitch = 0.0;
   late AnimationController _needleController;
   StreamSubscription<double>? _pitchSub;
 
-  final List<String> _strings = ['E', 'A', 'D', 'G', 'B', 'e'];
-  // 标准吉他空弦音名与频率：E2, A2, D3, G3, B3, E4
-  final Map<String, double> _frequencies = {
-    'E': 82.41,
-    'A': 110.00,
-    'D': 146.83,
-    'G': 196.00,
-    'B': 246.94,
-    'e': 329.63,
+  static const Map<TunerInstrument, List<String>> _instrumentStrings = {
+    TunerInstrument.guitar: ['E', 'A', 'D', 'G', 'B', 'e'],
   };
+
+  // 标准吉他空弦音名与频率：E2, A2, D3, G3, B3, E4
+  static const Map<TunerInstrument, Map<String, double>>
+  _instrumentFrequencies = {
+    TunerInstrument.guitar: {
+      'E': 82.41,
+      'A': 110.00,
+      'D': 146.83,
+      'G': 196.00,
+      'B': 246.94,
+      'e': 329.63,
+    },
+  };
+
+  List<String> get _strings => _instrumentStrings[_instrument]!;
+  Map<String, double> get _frequencies => _instrumentFrequencies[_instrument]!;
+
+  String _instrumentLabel(TunerInstrument instrument) {
+    switch (instrument) {
+      case TunerInstrument.guitar:
+        return '吉他，标准音';
+    }
+  }
 
   @override
   void initState() {
@@ -197,19 +194,44 @@ class _TunerTabState extends State<TunerTab>
 
     if (pitch < 40) return;
 
-    double targetFreq = _frequencies[_targetNote]!;
+    late final double targetFreq;
+    late final double pitchForDisplay;
+    late final double cents;
 
-    double cents = 1200 * math.log(pitch / targetFreq) / math.ln2;
+    if (_tuningMode == TuningMode.freeListening) {
+      final nearest = _nearestNoteFromPitch(pitch);
+      targetFreq = nearest.frequency;
+      pitchForDisplay = pitch;
+      cents = 1200 * math.log(pitchForDisplay / targetFreq) / math.ln2;
+      _nearestNoteLabel = nearest.label;
+      _nearestNoteFrequency = nearest.frequency;
+    } else {
+      targetFreq = _frequencies[_targetNote]!;
+      pitchForDisplay = _foldPitchToTargetOctave(pitch, targetFreq);
+      cents = 1200 * math.log(pitchForDisplay / targetFreq) / math.ln2;
+    }
 
     double maxCents = 100.0;
 
     double val = (cents / maxCents).clamp(-1.0, 1.0);
 
     setState(() {
-      _currentPitch = pitch;
+      _currentPitch = pitchForDisplay;
       _currentDiff = val;
     });
     _needleController.animateTo(val, curve: Curves.easeOut);
+  }
+
+  /// 将检测到的频率折叠到离目标频率最近的八度，抑制 2x/0.5x 跳变显示。
+  double _foldPitchToTargetOctave(double pitch, double targetFreq) {
+    var folded = pitch;
+    while (folded > targetFreq * 1.8) {
+      folded /= 2.0;
+    }
+    while (folded < targetFreq / 1.8) {
+      folded *= 2.0;
+    }
+    return folded;
   }
 
   @override
@@ -228,6 +250,51 @@ class _TunerTabState extends State<TunerTab>
       });
       _needleController.animateTo(0.0);
     }
+  }
+
+  void _selectInstrument(TunerInstrument instrument) {
+    if (_instrument == instrument) return;
+    setState(() {
+      _instrument = instrument;
+      _targetNote = _instrumentStrings[instrument]!.first;
+      _currentDiff = 0.0;
+      _currentPitch = 0.0;
+    });
+    _needleController.animateTo(0.0);
+  }
+
+  void _selectTuningMode(TuningMode mode) {
+    if (_tuningMode == mode) return;
+    setState(() {
+      _tuningMode = mode;
+      _currentDiff = 0.0;
+      _currentPitch = 0.0;
+      _nearestNoteLabel = '--';
+      _nearestNoteFrequency = 0.0;
+    });
+    _needleController.animateTo(0.0);
+  }
+
+  _NearestNote _nearestNoteFromPitch(double pitch) {
+    const noteNames = [
+      'C',
+      'C#',
+      'D',
+      'D#',
+      'E',
+      'F',
+      'F#',
+      'G',
+      'G#',
+      'A',
+      'A#',
+      'B',
+    ];
+    final midi = (69 + 12 * math.log(pitch / 440.0) / math.ln2).round();
+    final noteName = noteNames[midi % 12];
+    final octave = (midi ~/ 12) - 1;
+    final frequency = 440.0 * math.pow(2.0, (midi - 69) / 12.0).toDouble();
+    return _NearestNote(label: '$noteName$octave', frequency: frequency);
   }
 
   Widget _buildNoteButton(String note) {
@@ -268,6 +335,12 @@ class _TunerTabState extends State<TunerTab>
   @override
   Widget build(BuildContext context) {
     final isRecording = widget.audioEngine.isRecording;
+    final displayedNote = _tuningMode == TuningMode.freeListening
+        ? _nearestNoteLabel
+        : _targetNote;
+    final displayedTargetFrequency = _tuningMode == TuningMode.freeListening
+        ? _nearestNoteFrequency
+        : _frequencies[_targetNote]!;
 
     return Scaffold(
       body: SafeArea(
@@ -275,18 +348,54 @@ class _TunerTabState extends State<TunerTab>
           children: [
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    'QD 调音器',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 2,
-                      color: Colors.white70,
+                  if (_tuningMode == TuningMode.targetString) ...[
+                    Row(
+                      children: [
+                        const Text(
+                          '乐器',
+                          style: TextStyle(color: Colors.white70, fontSize: 14),
+                        ),
+                        const SizedBox(width: 10),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF2C2C2C),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: Colors.white24),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<TunerInstrument>(
+                              value: _instrument,
+                              dropdownColor: const Color(0xFF2C2C2C),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                              ),
+                              items: TunerInstrument.values
+                                  .map(
+                                    (instrument) => DropdownMenuItem(
+                                      value: instrument,
+                                      child: Text(_instrumentLabel(instrument)),
+                                    ),
+                                  )
+                                  .toList(),
+                              onChanged: (next) {
+                                if (next != null) _selectInstrument(next);
+                              },
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      '目前仅支持吉他，标准音，后续会增加更多乐器。',
+                      style: TextStyle(color: Colors.white54, fontSize: 12),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -313,7 +422,7 @@ class _TunerTabState extends State<TunerTab>
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Text(
-                              _targetNote,
+                              displayedNote,
                               style: TextStyle(
                                 fontSize: 96,
                                 fontWeight: FontWeight.w200,
@@ -323,7 +432,9 @@ class _TunerTabState extends State<TunerTab>
                               ),
                             ),
                             Text(
-                              '${_frequencies[_targetNote]} Hz',
+                              displayedTargetFrequency > 0
+                                  ? '${displayedTargetFrequency.toStringAsFixed(2)} Hz'
+                                  : '-- Hz',
                               style: const TextStyle(
                                 fontSize: 16,
                                 color: Color(0xFF00E5FF),
@@ -365,125 +476,49 @@ class _TunerTabState extends State<TunerTab>
               padding: const EdgeInsets.symmetric(vertical: 30, horizontal: 40),
               child: Column(
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: _strings
-                        .sublist(0, 3)
-                        .map(_buildNoteButton)
-                        .toList(),
-                  ),
-                  const SizedBox(height: 25),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: _strings
-                        .sublist(3, 6)
-                        .map(_buildNoteButton)
-                        .toList(),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class PickupTab extends StatelessWidget {
-  const PickupTab({super.key, required this.mode, required this.onModeChanged});
-
-  final TunerInputMode mode;
-  final ValueChanged<TunerInputMode> onModeChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return SafeArea(
-      child: ListView(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-        children: [
-          Text(
-            '拾音方式',
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '按实际接线选择，算法会自动匹配更适合的门限与灵敏度。',
-            style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white54),
-          ),
-          const SizedBox(height: 24),
-          SegmentedButton<TunerInputMode>(
-            segments: const [
-              ButtonSegment<TunerInputMode>(
-                value: TunerInputMode.microphone,
-                label: Text('麦克风'),
-                icon: Icon(Icons.mic_outlined),
-              ),
-              ButtonSegment<TunerInputMode>(
-                value: TunerInputMode.pickup,
-                label: Text('拾音器'),
-                icon: Icon(Icons.settings_input_component_outlined),
-              ),
-            ],
-            selected: {mode},
-            onSelectionChanged: (Set<TunerInputMode> next) {
-              if (next.isNotEmpty) onModeChanged(next.first);
-            },
-          ),
-          const SizedBox(height: 32),
-          _hintCard(
-            icon: Icons.mic,
-            title: '麦克风',
-            body: '木吉他、尤克里里等直接对环境收音。环境较吵时尽量靠近音孔、减少背景声。',
-          ),
-          const SizedBox(height: 16),
-          _hintCard(
-            icon: Icons.settings_input_component,
-            title: '拾音器',
-            body: '电吉他接声卡/效果器后内录、或压电夹子、IR 等线路信号。波形通常更干净，可适当调低手机系统音量避免过载。',
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _hintCard({
-    required IconData icon,
-    required String title,
-    required String body,
-  }) {
-    return Card(
-      color: const Color(0xFF2C2C2C),
-      elevation: 0,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(icon, color: const Color(0xFF00E5FF), size: 28),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                      color: Colors.white,
+                  if (_tuningMode == TuningMode.targetString) ...[
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: _strings
+                          .sublist(0, 3)
+                          .map(_buildNoteButton)
+                          .toList(),
                     ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    body,
-                    style: const TextStyle(color: Colors.white60, height: 1.35),
+                    const SizedBox(height: 25),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: _strings
+                          .sublist(3, 6)
+                          .map(_buildNoteButton)
+                          .toList(),
+                    ),
+                  ] else
+                    const Text(
+                      '自由拾音会自动显示最接近的音名。',
+                      style: TextStyle(
+                        color: Colors.white60,
+                        fontSize: 14,
+                        letterSpacing: 0.4,
+                      ),
+                    ),
+                  const SizedBox(height: 20),
+                  SegmentedButton<TuningMode>(
+                    segments: const [
+                      ButtonSegment<TuningMode>(
+                        value: TuningMode.targetString,
+                        icon: Icon(Icons.music_note_outlined),
+                        label: Text('定弦调音'),
+                      ),
+                      ButtonSegment<TuningMode>(
+                        value: TuningMode.freeListening,
+                        icon: Icon(Icons.graphic_eq),
+                        label: Text('自由拾音'),
+                      ),
+                    ],
+                    selected: {_tuningMode},
+                    onSelectionChanged: (next) {
+                      if (next.isNotEmpty) _selectTuningMode(next.first);
+                    },
                   ),
                 ],
               ),

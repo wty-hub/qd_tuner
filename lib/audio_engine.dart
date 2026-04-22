@@ -9,15 +9,6 @@ import 'package:record/record.dart';
 
 import 'yin_bindings.dart';
 
-/// 输入场景：手机麦克风（木吉他等）与电琴/夹子拾音等线路信号特性不同，门限分开调。
-enum TunerInputMode {
-  /// 环境/琴箱声，略偏抗环境噪声
-  microphone,
-
-  /// 电吉他、压电夹子等：波形更尖、底噪相对小，可略放宽检出
-  pickup,
-}
-
 class AudioEngine {
   final AudioRecorder _audioRecorder = AudioRecorder();
   final YinBindings _yinBindings = YinBindings();
@@ -38,23 +29,20 @@ class AudioEngine {
 
   // 音高结果平滑
   final List<double> _pitchHistory = [];
-  static const int _medianWindowSize = 5;
+  static const int _medianWindowSize = 7;
 
   /// 至少累计这么多帧有效音高就开始输出（略小于窗口，小声时更快有读数）
-  static const int _minHistoryForOutput = 3;
+  static const int _minHistoryForOutput = 4;
 
   /// 连续多少个「门关闭」的处理窗之后才视为静音
   /// （44100 Hz、每块 2048 采样时约 93 ms）。
   static const int _quietChunksForSilence = 2;
 
-  TunerInputMode _inputMode = TunerInputMode.microphone;
   double _rmsSmooth = 0.72;
   double _rmsOpen = 0.014;
   double _rmsClose = 0.009;
   double _peakGateWeight = 0.42;
   double _yinThreshold = 0.14;
-
-  TunerInputMode get inputMode => _inputMode;
 
   double _rmsEnvelope = 0.0;
   bool _voiceGateOpen = false;
@@ -70,37 +58,17 @@ class AudioEngine {
     _yinPointer = calloc<Yin>();
     _inputBuffer = calloc<Float>(_requiredSamples);
 
-    _applyInputModePresets();
+    _applyMicrophoneParams();
     _yinBindings.init(_yinPointer!, _yinThreshold);
   }
 
-  /// 切换麦克风 / 拾音器预设（可随时调用，会重置 YIN 内部阈值状态）
-  void setInputMode(TunerInputMode mode) {
-    if (mode == _inputMode) return;
-    _inputMode = mode;
-    _applyInputModePresets();
-    if (_yinPointer != null) {
-      _yinBindings.init(_yinPointer!, _yinThreshold);
-    }
-  }
-
-  void _applyInputModePresets() {
-    switch (_inputMode) {
-      case TunerInputMode.microphone:
-        _rmsSmooth = 0.72;
-        _rmsOpen = 0.014;
-        _rmsClose = 0.009;
-        _peakGateWeight = 0.42;
-        _yinThreshold = 0.14;
-        break;
-      case TunerInputMode.pickup:
-        _rmsSmooth = 0.68;
-        _rmsOpen = 0.010;
-        _rmsClose = 0.006;
-        _peakGateWeight = 0.50;
-        _yinThreshold = 0.12;
-        break;
-    }
+  /// 固定的麦克风收音参数（不再区分拾音模式）。
+  void _applyMicrophoneParams() {
+    _rmsSmooth = 0.78;
+    _rmsOpen = 0.014;
+    _rmsClose = 0.009;
+    _peakGateWeight = 0.34;
+    _yinThreshold = 0.16;
   }
 
   Future<void> start() async {
@@ -167,6 +135,9 @@ class AudioEngine {
 
       // 包络平滑：上一时刻与这一时刻音量的滑动平均数
       _rmsEnvelope = _rmsSmooth * _rmsEnvelope + (1.0 - _rmsSmooth) * level;
+
+      // 是否进入音高检测的逻辑
+      // 开启的阈值要大于关闭的阈值，防止噪声引起的忽开忽关
       if (_voiceGateOpen) {
         if (_rmsEnvelope < _rmsClose) _voiceGateOpen = false;
       } else {
@@ -190,9 +161,9 @@ class AudioEngine {
                 final ratio = pitch / currentMedian;
 
                 // 八度修正：约 2 倍 → 折半；约 0.5 倍 → 加倍
-                if (ratio > 1.9 && ratio < 2.1) {
+                if (ratio > 1.8 && ratio < 2.2) {
                   adjustedPitch /= 2;
-                } else if (ratio > 0.45 && ratio < 0.55) {
+                } else if (ratio > 0.45 && ratio < 0.56) {
                   adjustedPitch *= 2;
                 }
 
